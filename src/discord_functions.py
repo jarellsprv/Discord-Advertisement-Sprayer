@@ -1,3 +1,5 @@
+import datetime
+
 from Config import CONFIG
 from Logger import logger
 from initialization_functions import parse_time_range, check_token
@@ -43,7 +45,7 @@ def can_send_in_channel(user_id, user_roles, channel, base_perms, token):
     base_perms: int -> user's base permissions in the guild (calculated from roles)
     """
     SEND_MESSAGES = 0x800  # permission bit
-    logger.info(f"[...{token[-5:]}] Checking if user has permissions for channel {channel}")
+    logger.info(f"[...{token[-5:]}] Checking if user has permissions for channel {channel['id']}")
 
     # Start from base perms
     can_send = bool(base_perms & SEND_MESSAGES)
@@ -122,14 +124,15 @@ def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE,
                         CHANNEL_QUEUE.append(ch["id"])
                         logger.info(f"[...{token[-5:]}] Sendable channel: "
                                     + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
-                        if CONFIG["GenerateInvites"]:
-                            generate_invite(channelId=ch["id"], token=token)
+                        if CONFIG["GenerateAnalytics"]:
+                            generate_invite(ch, token, proxy)
             else:
                 CHANNEL_QUEUE.append(ch["id"])
                 logger.info(f"[...{token[-5:]}] Logging channel: "
                             + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
-                if CONFIG["GenerateInvites"]:
-                    generate_invite(channelId=ch["id"], token=token)
+                if CONFIG["GenerateAnalytics"]:
+                    generate_invite(ch, token, proxy)
+
         except Exception as e:
             logger.err(f"[...{token[-5:]}] Error processing channel {ch.get('id')}: {e}")
 
@@ -250,7 +253,7 @@ def send_message(channel_id, token, proxy, message,  max_retries=CONFIG["MaxRetr
                 logger.info(f"[...{token[-5:]}] Sent message to channel {channel_id}")
                 return True
             else:
-                logger.err(f"[...{token[-5:]}] Failed to send message (status {resp.status_code}): {resp.text}")
+                logger.err(f"[...{token[-5:]}] Failed to send message for channel id: {channel_id} (status {resp.status_code}): {resp.text}")
         except requests.exceptions.RequestException as e:
             logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error sending message. {e}")
 
@@ -316,20 +319,22 @@ def send_dm(token, channel_id, message, proxy=None, max_retries=CONFIG["MaxRetri
             if resp.status_code in (200, 201):
                 return True
             else:
-                logger.err(f"Attempt {attempt}: Failed to send DM (status {resp.status_code}) [...{token[-5:]}]: {resp.text}")
+                logger.err(f"[...{token[-5:]}] Attempt {attempt}: Failed to send DM (status {resp.status_code}): {resp.text}")
         except requests.exceptions.RequestException as e:
-            logger.err(f"Attempt {attempt}: Error sending DM [...{token[-5:]}] {e}")
+            logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error sending DM: {e}")
 
         if attempt < max_retries:
             time.sleep(delay)
 
     return False
 
-def generate_invite(channelId, token):
+def generate_invite(channel_id, token, proxy, max_retries=CONFIG["MaxRetriesForFailedRequests"], delay=CONFIG["DelayBetweenFailedRequests"]):
 
-    channels = {
-        channelId
+    proxies = {
+        "http": f"http://{proxy}",
+        "https": f"http://{proxy}"
     }
+
     headers = {
         "Authorization": token,
         "Content-Type": "application/json"
@@ -343,13 +348,127 @@ def generate_invite(channelId, token):
         "unique": True         # Create a unique invite
     }
 
-    for channel_id in channels:
-        url = f"https://discord.com/api/v10/channels/{channel_id}/invites"
-        response = requests.post(url, headers=headers, json=payload)
-        
-        if response.status_code == 200 or response.status_code == 201:
-            data = response.json()
-            invite_url = f"https://discord.gg/{data['code']}"
-            logger.info(f"Server invite: {invite_url}")
-        else:
-            logger.info(f"[...{token[-5:]}] Failed to create invite for channel {channel_id}: {response.status_code} {response.text}")
+    for attempt in range(1, max_retries + 1):
+        try:
+            url = f"https://discord.com/api/v10/channels/{channel_id}/invites"
+            response = requests.post(url, headers=headers, json=payload, proxies=proxies)
+
+            if response.status_code == 200 or response.status_code == 201:
+                data = response.json()
+                invite_url = f"https://discord.gg/{data['code']}"
+                return invite_url
+            else:
+                logger.info(f"[...{token[-5:]}] Failed to create invite for channel {channel_id}: {response.status_code} {response.text}")
+        except requests.exceptions.RequestException as e:
+            logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error generating invite: {e}")
+
+        if attempt < max_retries:
+            time.sleep(delay)
+
+    return "Failed to fetch invite"
+
+
+
+def log_serverMemberCount(token, guild_id, proxy, max_retries=CONFIG["MaxRetriesForFailedRequests"], delay=CONFIG["DelayBetweenFailedRequests"]):
+    proxies = {
+        "http": f"http://{proxy}",
+        "https": f"http://{proxy}"
+    }
+
+    url = f"https://discord.com/api/v10/guilds/{guild_id}?with_counts=true"
+
+    headers = {
+        "Authorization": token,
+        "Content-Type": "application/json"
+    }
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, proxies=proxies)
+            resp.raise_for_status()
+            data = resp.json()
+
+            serverName = data['name']
+            memberCount = data['approximate_member_count']
+            onlineMembers = data['approximate_presence_count']
+            return serverName, memberCount, onlineMembers
+        except requests.exceptions.RequestException as e:
+            logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error in getting server analytics")
+
+        if attempt < max_retries:
+            time.sleep(delay)
+
+    return "Failed to get server analytics"
+
+def log_messagesPerMinute(token, guild_id, proxy, max_retries=CONFIG["MaxRetriesForFailedRequests"], delay=CONFIG["DelayBetweenFailedRequests"]):
+    headers = {
+        "Authorization": token
+    }
+
+    proxies = {
+        "http": f"http://{proxy}",
+        "https": f"http://{proxy}"
+    }
+
+    def log_messages(channel_id):
+        for attempt in range(1, max_retries + 1):
+            try:
+                url = f"https://discord.com/api/v10/channels/{channel_id}/messages?limit=100"
+                resp = requests.get(url, headers=headers, proxies=proxies)
+
+                resp.raise_for_status()
+
+                messages = resp.json()
+                now = datetime.datetime.utcnow()
+                one_minute_ago = now - datetime.timedelta(seconds=60)
+
+                count = 0
+                for msg in messages:
+                    ts = datetime.datetime.fromisoformat(msg["timestamp"].replace("Z", "+00:00"))
+                    if ts > one_minute_ago:
+                        count += 1
+                return count
+
+            except requests.exceptions.RequestException as e:
+                logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error in getting server analytics")
+
+            if attempt < max_retries:
+                time.sleep(delay)
+        return 0
+
+
+    max_retries = CONFIG["MaxRetriesForFailedRequests"]
+    for attempt in range(1, max_retries + 1):
+        try:
+            url = f"https://discord.com/api/v10/guilds/{guild_id}/channels"
+            resp = requests.get(url, headers=headers, proxies=proxies)
+
+            resp.raise_for_status()
+            channels = resp.json()
+
+            total = 0
+
+            for ch in channels:
+                if ch["type"] == 0:
+                    total += log_messages(ch["id"])
+            return total
+
+        except requests.exceptions.RequestException as e:
+            logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error in getting server analytics")
+
+        if attempt < max_retries:
+            time.sleep(delay)
+    return "Failed to fetch last 100 messages"
+
+def generate_analytics(ch, guild_id, token, proxy):
+    if CONFIG["GenerateInvite"]:
+        invite = generate_invite(channel_id=ch["id"], token=token,proxy=proxy)
+    else:
+        invite = "Disabled in config"
+    serverName, serverMembers, onlineCount = log_serverMemberCount(token, guild_id, proxy)
+    if CONFIG["GenerateMessagesPerMinute"]:
+        msg_per_minute = log_messagesPerMinute(token, guild_id, proxy)
+    else:
+        msg_per_minute = "Disabled in config"
+
+    logger.info(f"[...{token[-5:]}] Server invite: {invite} , Name: {serverName} , Total Members: {serverMembers} , Online Members: {onlineCount} , Messages per minute: {msg_per_minute} ")
+
