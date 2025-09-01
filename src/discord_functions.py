@@ -2,6 +2,7 @@ from Config import CONFIG
 from Logger import logger
 from initialization_functions import parse_time_range, check_token
 import os, random, requests, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def pull_serverids(token, proxy, max_retries=CONFIG["MaxRetriesForFailedRequests"], delay=CONFIG["DelayBetweenFailedRequests"]):
@@ -34,35 +35,42 @@ def pull_serverids(token, proxy, max_retries=CONFIG["MaxRetriesForFailedRequests
             else:
                 return None
 
-def can_send_in_channel(user_id, user_roles, channel):
-    SEND_MESSAGES = 0x800
-    can_send = False  # default
+def can_send_in_channel(user_id, user_roles, channel, base_perms, token):
+    """
+    user_id: str -> the user's ID
+    user_roles: list[str] -> list of role IDs the user has
+    channel: dict -> channel JSON from Discord API
+    base_perms: int -> user's base permissions in the guild (calculated from roles)
+    """
+    SEND_MESSAGES = 0x800  # permission bit
+    logger.info(f"[...{token[-5:]}] Checking if user has permissions for channel {channel}")
 
-    # Step 1: everyone overwrite (id = guild_id)
+    # Start from base perms
+    can_send = bool(base_perms & SEND_MESSAGES)
+
     for overwrite in channel.get("permission_overwrites", []):
-        if overwrite["id"] == channel["guild_id"]:  # @everyone
-            allow = int(overwrite["allow"])
-            deny = int(overwrite["deny"])
+        ow_type = overwrite["type"]  # 0=role, 1=member
+        ow_id = overwrite["id"]
+
+        allow = int(overwrite["allow"])
+        deny = int(overwrite["deny"])
+
+        # @everyone overwrite
+        if ow_id == channel["guild_id"]:
             if deny & SEND_MESSAGES:
                 can_send = False
             if allow & SEND_MESSAGES:
                 can_send = True
 
-    # Step 2: role overwrites
-    for overwrite in channel.get("permission_overwrites", []):
-        if overwrite["type"] == 0 and overwrite["id"] in user_roles:
-            allow = int(overwrite["allow"])
-            deny = int(overwrite["deny"])
+        # Role overwrites
+        if ow_type == 0 and ow_id in user_roles:
             if deny & SEND_MESSAGES:
                 can_send = False
             if allow & SEND_MESSAGES:
                 can_send = True
 
-    # Step 3: member overwrite (highest priority)
-    for overwrite in channel.get("permission_overwrites", []):
-        if overwrite["type"] == 1 and overwrite["id"] == user_id:
-            allow = int(overwrite["allow"])
-            deny = int(overwrite["deny"])
+        # Member overwrite (highest priority)
+        if ow_type == 1 and ow_id == user_id:
             if deny & SEND_MESSAGES:
                 can_send = False
             if allow & SEND_MESSAGES:
@@ -70,45 +78,88 @@ def can_send_in_channel(user_id, user_roles, channel):
 
     return can_send
 
-def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE, max_retries=CONFIG["MaxRetriesForFailedRequests"], delay=CONFIG["DelayBetweenFailedRequests"]):
+
+def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE,
+                  max_retries=CONFIG["MaxRetriesForFailedRequests"],
+                  delay=CONFIG["DelayBetweenFailedRequests"]):
+
     logger.info(f"[...{token[-5:]}] Pulling channelIds")
+
     USER_ID = pull_userId(token, proxy)
     if not USER_ID:
         return None
 
     user_roles = pull_user_roles(token, guild_id, USER_ID, proxy)
-
     proxies = {"http": f"http://{proxy}", "https": f"https://{proxy}"}
     headers = {"Authorization": token, "Content-Type": "application/json"}
     url = f"https://discord.com/api/v9/guilds/{guild_id}/channels"
 
+    # --- Retry only for fetching channels ---
+    channels = None
     for attempt in range(1, max_retries + 1):
         try:
-            resp = requests.get(url, headers=headers, proxies=proxies)
+            resp = requests.get(url, headers=headers, proxies=proxies, timeout=10)
             resp.raise_for_status()
             channels = resp.json()
-            print(channels)
-
-            for ch in channels:
-                if CONFIG["FilterChannels"]:
-                    if ch["type"] == 0:  # text channel
-                        if can_send_in_channel(USER_ID, user_roles, ch):
-                            CHANNEL_QUEUE.append(ch["id"])
-                            logger.info(f"[...{token[-5:]}] Sendable channel: " + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
-                            if CONFIG["GenerateInvites"]:
-                                generate_invite(channelId=ch["id"], token=token)
-                else:
-                    CHANNEL_QUEUE.append(ch["id"])
-                    logger.info(f"[...{token[-5:]}] Logging channel: " + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
-                    if CONFIG["GenerateInvites"]:
-                        generate_invite(channelId=ch["id"], token=token)
-            return True if len(CHANNEL_QUEUE) != 0 else False
+            break
         except Exception as e:
-            logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error in fetching channels [...{token[-5:]}] {e}")
+            logger.err(f"[...{token[-5:]}] Attempt {attempt}: Failed fetching channels: {e}")
             if attempt < max_retries:
                 time.sleep(delay)
             else:
                 return None
+
+    if not channels:
+        return None
+
+    # --- Process channels concurrently (threads) ---
+    def process_channel(ch):
+        try:
+            if CONFIG["FilterChannels"]:
+                if ch.get("type") == 0:  # text channel only
+                    base_perms = get_base_permissions(token, guild_id, user_roles, proxy)
+                    if can_send_in_channel(USER_ID, user_roles, ch, base_perms, token):
+                        CHANNEL_QUEUE.append(ch["id"])
+                        logger.info(f"[...{token[-5:]}] Sendable channel: "
+                                    + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
+                        if CONFIG["GenerateInvites"]:
+                            generate_invite(channelId=ch["id"], token=token)
+            else:
+                CHANNEL_QUEUE.append(ch["id"])
+                logger.info(f"[...{token[-5:]}] Logging channel: "
+                            + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
+                if CONFIG["GenerateInvites"]:
+                    generate_invite(channelId=ch["id"], token=token)
+        except Exception as e:
+            logger.err(f"[...{token[-5:]}] Error processing channel {ch.get('id')}: {e}")
+
+    with ThreadPoolExecutor(max_workers=CONFIG["MaxThreadsForTokenCheck"]) as executor:
+        futures = [executor.submit(process_channel, ch) for ch in channels]
+        for future in as_completed(futures):
+            future.result()  # propagate exceptions if any
+
+    return True if CHANNEL_QUEUE else False
+            
+def get_base_permissions(token, guild_id, user_roles, proxy=None):
+    headers = {"Authorization": token, "Content-Type": "application/json"}
+    proxies = None
+    if proxy:
+        proxies = {"http": f"http://{proxy}", "https": f"https://{proxy}"}
+
+    url = f"https://discord.com/api/v9/guilds/{guild_id}/roles"
+    resp = requests.get(url, headers=headers, proxies=proxies)
+    resp.raise_for_status()
+    roles = resp.json()
+
+    # Map role_id -> permissions
+    role_perms = {r["id"]: int(r["permissions"]) for r in roles}
+
+    base_perms = 0
+    for role_id in user_roles:
+        if role_id in role_perms:
+            base_perms |= role_perms[role_id]
+
+    return base_perms
 
 
 def pull_userId(token, proxy, max_retries=CONFIG["MaxRetriesForFailedRequests"], delay=CONFIG["DelayBetweenFailedRequests"]):
