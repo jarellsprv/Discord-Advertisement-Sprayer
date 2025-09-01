@@ -6,9 +6,11 @@
   "MaxThreadsForProxyCheck": 100,
   "MaxRetriesForFailedRequests": 5,
   "DelayBetweenFailedRequests": 2,
-  "TimeBetweenChannelServerSpam": "2m-5m",
+  "TimeBetweenChannelServerSpam": "5s-30s",
   "TimeBetweenServerSpam": "30m-1h",
   "TimeBetweenDms": "5s-30s",
-  "GenerateInvites": true,
+  "GenerateAnalytics": true,
+  "GenerateInvite": true,
+  "GenerateMessagesPerMinute": true,
   "FilterChannels": false
 }
