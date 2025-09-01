@@ -95,7 +95,7 @@ def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE, max_retries=CONFIG["Max
                         logger.info(f"[...{token[-5:]}] Sendable channel: " +
                                     str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
                         if CONFIG["GenerateInvites"]:
-                            generate_invite(channelId=ch, token=token)
+                            generate_invite(channelId=ch["id"], token=token)
                         return True
             return False
         except Exception as e:
@@ -272,7 +272,7 @@ def send_dm(token, channel_id, message, proxy=None, max_retries=CONFIG["MaxRetri
 def generate_invite(channelId, token):
 
     channels = {
-        channel_id
+        channelId
     }
     headers = {
         "Authorization": token,
