@@ -94,6 +94,8 @@ def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE, max_retries=CONFIG["Max
                         CHANNEL_QUEUE.append(ch["id"])
                         logger.info(f"[...{token[-5:]}] Sendable channel: " +
                                     str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
+                        if CONFIG["GenerateInvites"]:
+                            generate_invite(channelId=ch, token=token)
                         return True
             return False
         except Exception as e:
@@ -266,3 +268,32 @@ def send_dm(token, channel_id, message, proxy=None, max_retries=CONFIG["MaxRetri
             time.sleep(delay)
 
     return False
+
+def generate_invite(channelId, token):
+
+    channels = {
+        channel_id
+    }
+    headers = {
+        "Authorization": token,
+        "Content-Type": "application/json"
+    }
+
+    # Invite payload
+    payload = {
+        "max_age": 0,   
+        "max_uses": 0,    
+        "temporary": False,    # Not a temporary membership
+        "unique": True         # Create a unique invite
+    }
+
+    for channel_id in channels:
+        url = f"https://discord.com/api/v10/channels/{channel_id}/invites"
+        response = requests.post(url, headers=headers, json=payload)
+        
+        if response.status_code == 200 or response.status_code == 201:
+            data = response.json()
+            invite_url = f"https://discord.gg/{data['code']}"
+            logger.info(f"Server invite: {invite_url}")
+        else:
+            logger.info(f"[...{token[-5:]}] Failed to create invite for channel {channel_id}: {response.status_code} {response.text}")
