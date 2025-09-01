@@ -102,6 +102,7 @@ def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE, max_retries=CONFIG["Max
                     logger.info(f"[...{token[-5:]}] Logging channel: " + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
                     if CONFIG["GenerateInvites"]:
                         generate_invite(channelId=ch["id"], token=token)
+                    return True
             return False
         except Exception as e:
             logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error in fetching channels [...{token[-5:]}] {e}")
