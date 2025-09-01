@@ -89,14 +89,19 @@ def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE, max_retries=CONFIG["Max
             channels = resp.json()
 
             for ch in channels:
-                if ch["type"] == 0:  # text channel
-                    if can_send_in_channel(USER_ID, user_roles, ch):
-                        CHANNEL_QUEUE.append(ch["id"])
-                        logger.info(f"[...{token[-5:]}] Sendable channel: " +
-                                    str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
-                        if CONFIG["GenerateInvites"]:
-                            generate_invite(channelId=ch["id"], token=token)
-                        return True
+                if CONFIG["FilterChannels"]:
+                    if ch["type"] == 0:  # text channel
+                        if can_send_in_channel(USER_ID, user_roles, ch):
+                            CHANNEL_QUEUE.append(ch["id"])
+                            logger.info(f"[...{token[-5:]}] Sendable channel: " + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
+                            if CONFIG["GenerateInvites"]:
+                                generate_invite(channelId=ch["id"], token=token)
+                            return True
+                else:
+                    CHANNEL_QUEUE.append(ch["id"])
+                    logger.info(f"[...{token[-5:]}] Logging channel: " + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
+                    if CONFIG["GenerateInvites"]:
+                        generate_invite(channelId=ch["id"], token=token)
             return False
         except Exception as e:
             logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error in fetching channels [...{token[-5:]}] {e}")
