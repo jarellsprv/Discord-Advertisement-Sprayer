@@ -9,5 +9,6 @@
   "TimeBetweenChannelServerSpam": "2m-5m",
   "TimeBetweenServerSpam": "30m-1h",
   "TimeBetweenDms": "5s-30s",
-  "GenerateInvites": true
+  "GenerateInvites": true,
+  "FilterChannels": false
 }
