@@ -87,6 +87,7 @@ def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE, max_retries=CONFIG["Max
             resp = requests.get(url, headers=headers, proxies=proxies)
             resp.raise_for_status()
             channels = resp.json()
+            print(channels)
 
             for ch in channels:
                 if CONFIG["FilterChannels"]:
@@ -96,14 +97,12 @@ def pull_channels(token, guild_id, proxy, CHANNEL_QUEUE, max_retries=CONFIG["Max
                             logger.info(f"[...{token[-5:]}] Sendable channel: " + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
                             if CONFIG["GenerateInvites"]:
                                 generate_invite(channelId=ch["id"], token=token)
-                            return True
                 else:
                     CHANNEL_QUEUE.append(ch["id"])
                     logger.info(f"[...{token[-5:]}] Logging channel: " + str({"id": ch["id"], "name": ch['name'].encode('ascii', errors='ignore').decode()}))
                     if CONFIG["GenerateInvites"]:
                         generate_invite(channelId=ch["id"], token=token)
-                    return True
-            return False
+            return True if len(CHANNEL_QUEUE) != 0 else False
         except Exception as e:
             logger.err(f"[...{token[-5:]}] Attempt {attempt}: Error in fetching channels [...{token[-5:]}] {e}")
             if attempt < max_retries:
